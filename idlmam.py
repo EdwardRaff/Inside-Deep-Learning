@@ -91,7 +91,7 @@ def run_epoch(model, optimizer, data_loader, loss_func, device, results, score_f
             results[prefix + " " + name].append(float("NaN"))
     return end-start #time spent on epoch
 
-def train_simple_network(model, loss_func, train_loader, val_loader=None, score_funcs=None, 
+def train_simple_network(model, loss_func, train_loader, test_loader=None, score_funcs=None, 
                          epochs=50, device="cpu", checkpoint_file=None, lr=0.001):
     """Train simple neural networks
     
@@ -99,19 +99,19 @@ def train_simple_network(model, loss_func, train_loader, val_loader=None, score_
     model -- the PyTorch model / "Module" to train
     loss_func -- the loss function that takes in batch in two arguments, the model outputs and the labels, and returns a score
     train_loader -- PyTorch DataLoader object that returns tuples of (input, label) pairs. 
-    val_loader -- Optional PyTorch DataLoader to evaluate on after every epoch
+    test_loader -- Optional PyTorch DataLoader to evaluate on after every epoch
     score_funcs -- A dictionary of scoring functions to use to evalue the performance of the model
     epochs -- the number of training epochs to perform
     device -- the compute lodation to perform training
     
     """
     to_track = ["epoch", "total time", "train loss"]
-    if val_loader is not None:
-        to_track.append("val loss")
+    if test_loader is not None:
+        to_track.append("test loss")
     for eval_score in score_funcs:
         to_track.append("train " + eval_score )
-        if val_loader is not None:
-            to_track.append("val " + eval_score )
+        if test_loader is not None:
+            to_track.append("test " + eval_score )
         
     total_train_time = 0 #How long have we spent in the training loop? 
     results = {}
@@ -131,10 +131,10 @@ def train_simple_network(model, loss_func, train_loader, val_loader=None, score_
         results["total time"].append( total_train_time )
         results["epoch"].append( epoch )
         
-        if val_loader is not None:
+        if test_loader is not None:
             model = model.eval()
             with torch.no_grad():
-                run_epoch(model, optimizer, val_loader, loss_func, device, results, score_funcs, prefix="val", desc="Testing")
+                run_epoch(model, optimizer, test_loader, loss_func, device, results, score_funcs, prefix="test", desc="Testing")
                     
     if checkpoint_file is not None:
         torch.save({
@@ -282,7 +282,7 @@ def train_network(model, loss_func, train_loader, val_loader=None, test_loader=N
         if test_loader is not None:
             model = model.eval() #Set the model to "evaluation" mode, b/c we don't want to make any updates!
             with torch.no_grad():
-                run_epoch(model, optimizer, val_loader, loss_func, device, results, score_funcs, prefix="test", desc="Testing")
+                run_epoch(model, optimizer, test_loader, loss_func, device, results, score_funcs, prefix="test", desc="Testing")
         
         
         if checkpoint_file is not None:
@@ -348,7 +348,7 @@ class EmbeddingPackable(nn.Module):
             #Embed it
             sequences = self.embd_layer(sequences.to(input.data.device))
             #And pack it into a new sequence
-            return torch.nn.utils.rnn.pack_padded_sequence(sequences, lengths.to(input.data.device), 
+            return torch.nn.utils.rnn.pack_padded_sequence(sequences, lengths.cpu(), 
                                                            batch_first=True, enforce_sorted=False)
         else:#apply to normal data
             return self.embd_layer(input)
@@ -356,6 +356,35 @@ class EmbeddingPackable(nn.Module):
 
 
 ### Attention Mechanism Layers
+
+class ApplyAttention(nn.Module):
+    """
+    This helper module is used to apply the results of an attention mechanism toa set of inputs. 
+    """
+
+    def __init__(self):
+        super(ApplyAttention, self).__init__()
+        
+    def forward(self, states, attention_scores, mask=None):
+        """
+        states: (B, T, H) shape giving the T different possible inputs
+        attention_scores: (B, T, 1) score for each item at each context
+        mask: None if all items are present. Else a boolean tensor of shape 
+            (B, T), with `True` indicating which items are present / valid. 
+            
+        returns: a tuple with two tensors. The first tensor is the final context
+        from applying the attention to the states (B, H) shape. The second tensor
+        is the weights for each state with shape (B, T, 1). 
+        """
+        
+        if mask is not None:
+            #set everything not present to a large negative value that will cause vanishing gradients 
+            attention_scores[~mask] = -1000.0
+        #compute the weight for each score
+        weights = F.softmax(attention_scores, dim=1) #(B, T, 1) still, but sum(T) = 1
+    
+        final_context = (states*weights).sum(dim=1) #(B, T, D) * (B, T, 1) -> (B, D)
+        return final_context, weights
 
 class AttentionAvg(nn.Module):
 
@@ -527,7 +556,7 @@ def pad_and_pack(batch):
     #4: create the padded version of the input
     x_padded = torch.nn.utils.rnn.pad_sequence(input_tensors, batch_first=False)
     #5: create the packed version from the padded & lengths
-    x_packed = torch.nn.utils.rnn.pack_padded_sequence(x_padded, lengths, batch_first=False, enforce_sorted=False)
+    x_packed = torch.nn.utils.rnn.pack_padded_sequence(x_padded, lengths.cpu(), batch_first=False, enforce_sorted=False)
     #Convert the lengths into a tensor
     y_batched = torch.as_tensor(labels, dtype=torch.long)
     #6: return a tuple of the packed inputs and their labels
