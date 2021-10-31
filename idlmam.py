@@ -556,7 +556,7 @@ def pad_and_pack(batch):
     #4: create the padded version of the input
     x_padded = torch.nn.utils.rnn.pad_sequence(input_tensors, batch_first=False)
     #5: create the packed version from the padded & lengths
-    x_packed = torch.nn.utils.rnn.pack_padded_sequence(x_padded, lengths.cpu(), batch_first=False, enforce_sorted=False)
+    x_packed = torch.nn.utils.rnn.pack_padded_sequence(x_padded, lengths, batch_first=False, enforce_sorted=False)
     #Convert the lengths into a tensor
     y_batched = torch.as_tensor(labels, dtype=torch.long)
     #6: return a tuple of the packed inputs and their labels
